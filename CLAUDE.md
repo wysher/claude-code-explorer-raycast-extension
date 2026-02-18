@@ -13,3 +13,4 @@ Raycast extension for interacting with the Claude Code ecosystem.
 - Communicate with user in Polish
 - Use bun instead of npm/pnpm
 - No over-engineering — minimal solutions
+- Always update CHANGELOG.md when adding features, fixing bugs, or making notable changes
