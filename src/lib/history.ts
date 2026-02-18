@@ -44,22 +44,29 @@ export function getProjectName(projectPath: string): string {
 }
 
 export function buildSessions(entries: HistoryEntry[]): Session[] {
-  const seen = new Set<string>();
-  const sessions: Session[] = [];
+  const map = new Map<string, Session>();
 
   for (const entry of entries) {
-    if (!entry.sessionId || seen.has(entry.sessionId)) continue;
-    seen.add(entry.sessionId);
-    sessions.push({
-      id: entry.sessionId,
-      display: entry.display,
-      timestamp: entry.timestamp,
-      project: entry.project,
-      projectName: getProjectName(entry.project),
-    });
+    if (!entry.sessionId) continue;
+
+    const existing = map.get(entry.sessionId);
+    if (!existing) {
+      map.set(entry.sessionId, {
+        id: entry.sessionId,
+        display: entry.display,
+        timestamp: entry.timestamp,
+        lastActiveAt: entry.timestamp,
+        project: entry.project,
+        projectName: getProjectName(entry.project),
+      });
+    } else {
+      if (entry.timestamp > existing.lastActiveAt) {
+        existing.lastActiveAt = entry.timestamp;
+      }
+    }
   }
 
-  return sessions.sort((a, b) => b.timestamp - a.timestamp);
+  return [...map.values()];
 }
 
 function getSessionPath(session: Session): string {

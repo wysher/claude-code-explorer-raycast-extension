@@ -30,6 +30,9 @@ export interface Session {
   id: string;
   display: string;
   timestamp: number;
+  lastActiveAt: number;
   project: string;
   projectName: string;
 }
+
+export type SortOrder = "recent" | "created";
