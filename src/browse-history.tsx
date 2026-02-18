@@ -8,7 +8,7 @@ import {
   Icon,
 } from "@raycast/api";
 import { useCachedPromise } from "@raycast/utils";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   loadHistoryEntries,
   getUniqueProjects,
@@ -23,11 +23,26 @@ import type { Session, SortOrder } from "./lib/types";
 const LAST_PROJECT_KEY = "browse-history-last-project";
 const SORT_ORDER_KEY = "browse-history-sort-order";
 const ALL_PROJECTS = "__all__";
+const DEBOUNCE_MS = 150;
 
-function useConversationMarkdown(session: Session) {
-  const { data: messages, isLoading } = useCachedPromise(loadConversation, [
-    session,
-  ]);
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    timer.current = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer.current);
+  }, [value, delay]);
+
+  return debounced;
+}
+
+function useConversationMarkdown(session: Session, enabled: boolean) {
+  const { data: messages, isLoading } = useCachedPromise(
+    loadConversation,
+    [session],
+    { execute: enabled },
+  );
   const markdown = messages ? formatMessagesAsMarkdown(messages) : "";
   return { markdown, isLoading };
 }
@@ -75,13 +90,13 @@ function SessionActions({
   );
 }
 
-function SessionDetail({ session }: { session: Session }) {
-  const { markdown, isLoading } = useConversationMarkdown(session);
-  return <List.Item.Detail isLoading={isLoading} markdown={markdown} />;
+function SessionDetail({ session, active }: { session: Session; active: boolean }) {
+  const { markdown, isLoading } = useConversationMarkdown(session, active);
+  return <List.Item.Detail isLoading={active && isLoading} markdown={markdown} />;
 }
 
 function FullConversation({ session }: { session: Session }) {
-  const { markdown, isLoading } = useConversationMarkdown(session);
+  const { markdown, isLoading } = useConversationMarkdown(session, true);
   return (
     <Detail
       isLoading={isLoading}
@@ -103,6 +118,11 @@ export default function Command() {
   const [selectedProject, setSelectedProject] = useState<string>(ALL_PROJECTS);
   const [sortOrder, setSortOrder] = useState<SortOrder>("recent");
   const [loaded, setLoaded] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const debouncedSearch = useDebouncedValue(searchText, DEBOUNCE_MS);
+  const debouncedSelectedId = useDebouncedValue(selectedId, DEBOUNCE_MS);
 
   useEffect(() => {
     Promise.all([
@@ -118,11 +138,21 @@ export default function Command() {
 
   const projects = entries ? getUniqueProjects(entries) : [];
   const sessions = entries ? buildSessions(entries) : [];
-  const filtered =
+  const projectFiltered =
     selectedProject === ALL_PROJECTS
       ? sessions
       : sessions.filter((s) => s.project === selectedProject);
-  const sorted = sortSessions(filtered, sortOrder);
+  const sorted = sortSessions(projectFiltered, sortOrder);
+
+  const filtered = debouncedSearch
+    ? sorted.filter((s) => {
+        const q = debouncedSearch.toLowerCase();
+        return (
+          s.display?.toLowerCase().includes(q) ||
+          s.projectName?.toLowerCase().includes(q)
+        );
+      })
+    : sorted;
 
   function handleProjectChange(value: string) {
     setSelectedProject(value);
@@ -139,6 +169,10 @@ export default function Command() {
     <List
       isLoading={loadingEntries || !loaded}
       isShowingDetail
+      filtering={false}
+      onSearchTextChange={setSearchText}
+      throttle
+      onSelectionChange={setSelectedId}
       searchBarPlaceholder="Search history..."
       searchBarAccessory={
         <List.Dropdown
@@ -155,12 +189,13 @@ export default function Command() {
         </List.Dropdown>
       }
     >
-      {sorted.map((session) => {
+      {filtered.map((session) => {
         const date = new Date(
           sortOrder === "recent" ? session.lastActiveAt : session.timestamp,
         );
         return (
           <List.Item
+            id={session.id}
             key={session.id}
             title={session.display || `[${date.toLocaleString()}]`}
             subtitle={selectedProject === ALL_PROJECTS ? session.projectName : undefined}
@@ -170,7 +205,12 @@ export default function Command() {
                 tooltip: date.toLocaleString(),
               },
             ]}
-            detail={<SessionDetail session={session} />}
+            detail={
+              <SessionDetail
+                session={session}
+                active={debouncedSelectedId === session.id}
+              />
+            }
             actions={
               <SessionActions
                 session={session}
