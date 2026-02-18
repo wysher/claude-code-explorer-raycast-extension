@@ -17,7 +17,7 @@ import {
   formatMessagesAsMarkdown,
   getProjectName,
 } from "./lib/history";
-import { formatRelativeTime } from "./lib/utils";
+import { formatRelativeTime, extractTextContent, isToolResultOnly } from "./lib/utils";
 import type { Session, SortOrder } from "./lib/types";
 
 const LAST_PROJECT_KEY = "browse-history-last-project";
@@ -51,10 +51,14 @@ function SessionActions({
   session,
   sortOrder,
   onToggleSort,
+  firstPrompt,
+  lastPrompt,
 }: {
   session: Session;
-  sortOrder: SortOrder;
-  onToggleSort: () => void;
+  sortOrder?: SortOrder;
+  onToggleSort?: () => void;
+  firstPrompt?: string;
+  lastPrompt?: string;
 }) {
   return (
     <ActionPanel>
@@ -63,12 +67,28 @@ function SessionActions({
         icon={Icon.Eye}
         target={<FullConversation session={session} />}
       />
-      <Action
-        title={sortOrder === "recent" ? "Sort by Created" : "Sort by Recent"}
-        icon={Icon.ArrowsContract}
-        shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
-        onAction={onToggleSort}
-      />
+      {sortOrder && onToggleSort && (
+        <Action
+          title={sortOrder === "recent" ? "Sort by Created" : "Sort by Recent"}
+          icon={Icon.ArrowsContract}
+          shortcut={{ modifiers: ["cmd", "shift"], key: "s" }}
+          onAction={onToggleSort}
+        />
+      )}
+      {firstPrompt && (
+        <Action.CopyToClipboard
+          title="Copy First Prompt"
+          content={firstPrompt}
+          shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+        />
+      )}
+      {lastPrompt && (
+        <Action.CopyToClipboard
+          title="Copy Last Prompt"
+          content={lastPrompt}
+          shortcut={{ modifiers: ["cmd", "shift"], key: "l" }}
+        />
+      )}
       <Action.CopyToClipboard
         title="Copy Resume Command (skip Permissions)"
         content={`claude --dangerously-skip-permissions --resume ${session.id}`}
@@ -90,9 +110,54 @@ function SessionActions({
   );
 }
 
-function SessionDetail({ session, active }: { session: Session; active: boolean }) {
-  const { markdown, isLoading } = useConversationMarkdown(session, active);
-  return <List.Item.Detail isLoading={active && isLoading} markdown={markdown} />;
+function SessionItem({
+  session,
+  active,
+  sortOrder,
+  onToggleSort,
+  showProjectName,
+}: {
+  session: Session;
+  active: boolean;
+  sortOrder: SortOrder;
+  onToggleSort: () => void;
+  showProjectName: boolean;
+}) {
+  const { data: messages, isLoading } = useCachedPromise(
+    loadConversation,
+    [session],
+    { execute: active },
+  );
+  const markdown = messages ? formatMessagesAsMarkdown(messages) : "";
+
+  const userMessages = (messages ?? []).filter(
+    (m) => m.type === "user" && m.message && !isToolResultOnly(m.message.content),
+  );
+  const firstPrompt = userMessages.length > 0 ? extractTextContent(userMessages[0].message.content) : undefined;
+  const lastPrompt = userMessages.length > 1 ? extractTextContent(userMessages[userMessages.length - 1].message.content) : undefined;
+
+  const date = new Date(
+    sortOrder === "recent" ? session.lastActiveAt : session.timestamp,
+  );
+
+  return (
+    <List.Item
+      id={session.id}
+      title={session.display || `[${date.toLocaleString()}]`}
+      subtitle={showProjectName ? session.projectName : undefined}
+      accessories={[{ text: formatRelativeTime(date), tooltip: date.toLocaleString() }]}
+      detail={<List.Item.Detail isLoading={active && isLoading} markdown={markdown} />}
+      actions={
+        <SessionActions
+          session={session}
+          sortOrder={sortOrder}
+          onToggleSort={onToggleSort}
+          firstPrompt={firstPrompt}
+          lastPrompt={lastPrompt}
+        />
+      }
+    />
+  );
 }
 
 function FullConversation({ session }: { session: Session }) {
@@ -189,38 +254,16 @@ export default function Command() {
         </List.Dropdown>
       }
     >
-      {filtered.map((session) => {
-        const date = new Date(
-          sortOrder === "recent" ? session.lastActiveAt : session.timestamp,
-        );
-        return (
-          <List.Item
-            id={session.id}
-            key={session.id}
-            title={session.display || `[${date.toLocaleString()}]`}
-            subtitle={selectedProject === ALL_PROJECTS ? session.projectName : undefined}
-            accessories={[
-              {
-                text: formatRelativeTime(date),
-                tooltip: date.toLocaleString(),
-              },
-            ]}
-            detail={
-              <SessionDetail
-                session={session}
-                active={debouncedSelectedId === session.id}
-              />
-            }
-            actions={
-              <SessionActions
-                session={session}
-                sortOrder={sortOrder}
-                onToggleSort={toggleSort}
-              />
-            }
-          />
-        );
-      })}
+      {filtered.map((session) => (
+        <SessionItem
+          key={session.id}
+          session={session}
+          active={debouncedSelectedId === session.id}
+          sortOrder={sortOrder}
+          onToggleSort={toggleSort}
+          showProjectName={selectedProject === ALL_PROJECTS}
+        />
+      ))}
     </List>
   );
 }
