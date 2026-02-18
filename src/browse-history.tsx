@@ -37,14 +37,10 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debounced;
 }
 
-function useConversationMarkdown(session: Session, enabled: boolean) {
-  const { data: messages, isLoading } = useCachedPromise(
-    loadConversation,
-    [session],
-    { execute: enabled },
-  );
-  const markdown = messages ? formatMessagesAsMarkdown(messages) : "";
-  return { markdown, isLoading };
+interface ConversationData {
+  markdown: string;
+  firstPrompt?: string;
+  lastPrompt?: string;
 }
 
 function SessionActions({
@@ -110,58 +106,9 @@ function SessionActions({
   );
 }
 
-function SessionItem({
-  session,
-  active,
-  sortOrder,
-  onToggleSort,
-  showProjectName,
-}: {
-  session: Session;
-  active: boolean;
-  sortOrder: SortOrder;
-  onToggleSort: () => void;
-  showProjectName: boolean;
-}) {
-  const { data: messages, isLoading } = useCachedPromise(
-    loadConversation,
-    [session],
-    { execute: active },
-  );
-  const markdown = messages ? formatMessagesAsMarkdown(messages) : "";
-
-  const userMessages = (messages ?? []).filter(
-    (m) => m.type === "user" && m.message && !isToolResultOnly(m.message.content),
-  );
-  const firstPrompt = userMessages.length > 0 ? extractTextContent(userMessages[0].message.content) : undefined;
-  const lastPrompt = userMessages.length > 1 ? extractTextContent(userMessages[userMessages.length - 1].message.content) : undefined;
-
-  const date = new Date(
-    sortOrder === "recent" ? session.lastActiveAt : session.timestamp,
-  );
-
-  return (
-    <List.Item
-      id={session.id}
-      title={session.display || `[${date.toLocaleString()}]`}
-      subtitle={showProjectName ? session.projectName : undefined}
-      accessories={[{ text: formatRelativeTime(date), tooltip: date.toLocaleString() }]}
-      detail={<List.Item.Detail isLoading={active && isLoading} markdown={markdown} />}
-      actions={
-        <SessionActions
-          session={session}
-          sortOrder={sortOrder}
-          onToggleSort={onToggleSort}
-          firstPrompt={firstPrompt}
-          lastPrompt={lastPrompt}
-        />
-      }
-    />
-  );
-}
-
 function FullConversation({ session }: { session: Session }) {
-  const { markdown, isLoading } = useConversationMarkdown(session, true);
+  const { data: messages, isLoading } = useCachedPromise(loadConversation, [session]);
+  const markdown = messages ? formatMessagesAsMarkdown(messages) : "";
   return (
     <Detail
       isLoading={isLoading}
@@ -219,6 +166,33 @@ export default function Command() {
       })
     : sorted;
 
+  // Single conversation loader - avoids N hook instances from N SessionItems
+  const sessionsRef = useRef<Session[]>([]);
+  sessionsRef.current = filtered;
+
+  const { data: conversationData, isLoading: loadingConversation } = useCachedPromise(
+    async (sessionId: string): Promise<ConversationData> => {
+      const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (!session) return { markdown: "" };
+      const messages = await loadConversation(session);
+      const markdown = formatMessagesAsMarkdown(messages);
+      const userMessages = messages.filter(
+        (m) => m.type === "user" && m.message && !isToolResultOnly(m.message.content),
+      );
+      const firstPrompt =
+        userMessages.length > 0 ? extractTextContent(userMessages[0].message.content) || undefined : undefined;
+      const lastPrompt =
+        userMessages.length > 1
+          ? extractTextContent(userMessages[userMessages.length - 1].message.content) || undefined
+          : undefined;
+      return { markdown, firstPrompt, lastPrompt };
+    },
+    [debouncedSelectedId ?? ""],
+    { execute: debouncedSelectedId !== null },
+  );
+
+  const { markdown = "", firstPrompt, lastPrompt } = conversationData ?? {};
+
   function handleProjectChange(value: string) {
     setSelectedProject(value);
     LocalStorage.setItem(LAST_PROJECT_KEY, value);
@@ -254,16 +228,36 @@ export default function Command() {
         </List.Dropdown>
       }
     >
-      {filtered.map((session) => (
-        <SessionItem
-          key={session.id}
-          session={session}
-          active={debouncedSelectedId === session.id}
-          sortOrder={sortOrder}
-          onToggleSort={toggleSort}
-          showProjectName={selectedProject === ALL_PROJECTS}
-        />
-      ))}
+      {filtered.map((session) => {
+        const isSelected = session.id === debouncedSelectedId;
+        const date = new Date(
+          sortOrder === "recent" ? session.lastActiveAt : session.timestamp,
+        );
+        return (
+          <List.Item
+            id={session.id}
+            key={session.id}
+            title={session.display || `[${date.toLocaleString()}]`}
+            subtitle={selectedProject === ALL_PROJECTS ? session.projectName : undefined}
+            accessories={[{ text: formatRelativeTime(date), tooltip: date.toLocaleString() }]}
+            detail={
+              <List.Item.Detail
+                isLoading={isSelected && loadingConversation}
+                markdown={isSelected ? markdown : ""}
+              />
+            }
+            actions={
+              <SessionActions
+                session={session}
+                sortOrder={sortOrder}
+                onToggleSort={toggleSort}
+                firstPrompt={isSelected ? firstPrompt : undefined}
+                lastPrompt={isSelected ? lastPrompt : undefined}
+              />
+            }
+          />
+        );
+      })}
     </List>
   );
 }

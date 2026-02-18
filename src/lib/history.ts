@@ -1,4 +1,4 @@
-import { readFile } from "fs/promises";
+import { readFile, stat, open } from "fs/promises";
 import { homedir } from "os";
 import { join, basename } from "path";
 import type { HistoryEntry, ConversationMessage, Session } from "./types";
@@ -11,6 +11,7 @@ import {
 const CLAUDE_DIR = join(homedir(), ".claude");
 const HISTORY_PATH = join(CLAUDE_DIR, "history.jsonl");
 const PROJECTS_DIR = join(CLAUDE_DIR, "projects");
+const MAX_READ_BYTES = 2 * 1024 * 1024; // 2MB cap per session file
 
 function parseJsonl<T>(content: string): T[] {
   const results: T[] = [];
@@ -74,12 +75,39 @@ function getSessionPath(session: Session): string {
   return join(PROJECTS_DIR, encoded, `${session.id}.jsonl`);
 }
 
+async function safeReadFile(path: string, maxBytes: number): Promise<string> {
+  const s = await stat(path);
+  if (s.size <= maxBytes) {
+    return readFile(path, "utf-8");
+  }
+  // Read head + tail to get first and last messages
+  const half = Math.floor(maxBytes / 2);
+  const fd = await open(path, "r");
+  try {
+    const headBuf = Buffer.alloc(half);
+    const tailBuf = Buffer.alloc(half);
+    await fd.read(headBuf, 0, half, 0);
+    await fd.read(tailBuf, 0, half, s.size - half);
+
+    const headStr = headBuf.toString("utf-8");
+    const headEnd = headStr.lastIndexOf("\n");
+    const tailStr = tailBuf.toString("utf-8");
+    const tailStart = tailStr.indexOf("\n");
+
+    const head = headEnd > 0 ? headStr.slice(0, headEnd) : headStr;
+    const tail = tailStart >= 0 ? tailStr.slice(tailStart + 1) : tailStr;
+    return head + "\n" + tail;
+  } finally {
+    await fd.close();
+  }
+}
+
 export async function loadConversation(
   session: Session,
 ): Promise<ConversationMessage[]> {
   try {
     const filePath = getSessionPath(session);
-    const content = await readFile(filePath, "utf-8");
+    const content = await safeReadFile(filePath, MAX_READ_BYTES);
     const messages = parseJsonl<ConversationMessage>(content);
     return messages.filter((m) => m.type === "user" || m.type === "assistant");
   } catch {

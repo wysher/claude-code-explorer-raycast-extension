@@ -1,11 +1,13 @@
 import { List, ActionPanel, Action } from "@raycast/api";
 import { useCachedPromise } from "@raycast/utils";
+import { useState, useEffect, useRef } from "react";
 import { readdir, readFile, stat } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import { formatRelativeTime } from "./lib/utils";
 
 const PLANS_DIR = join(homedir(), ".claude", "plans");
+const DEBOUNCE_MS = 150;
 
 interface PlanFile {
   name: string;
@@ -13,6 +15,18 @@ interface PlanFile {
   path: string;
   content: string;
   modifiedAt: Date;
+}
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+
+  useEffect(() => {
+    timer.current = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer.current);
+  }, [value, delay]);
+
+  return debounced;
 }
 
 function extractFirstHeading(content: string): string | undefined {
@@ -50,14 +64,29 @@ async function loadPlans(): Promise<PlanFile[]> {
 
 export default function Command() {
   const { data: plans, isLoading } = useCachedPromise(loadPlans);
+  const [searchText, setSearchText] = useState("");
+  const debouncedSearch = useDebouncedValue(searchText, DEBOUNCE_MS);
+
+  const filtered = debouncedSearch
+    ? (plans ?? []).filter((p) => {
+        const q = debouncedSearch.toLowerCase();
+        return (
+          p.name.toLowerCase().includes(q) ||
+          (p.title?.toLowerCase().includes(q) ?? false)
+        );
+      })
+    : (plans ?? []);
 
   return (
     <List
       isLoading={isLoading}
       isShowingDetail
+      filtering={false}
+      onSearchTextChange={setSearchText}
+      throttle
       searchBarPlaceholder="Search plans..."
     >
-      {plans?.map((plan) => (
+      {filtered.map((plan) => (
         <List.Item
           key={plan.path}
           title={plan.title ?? plan.name}
